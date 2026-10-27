@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using SCSKiller.Core.Games;
 using SCSKiller.Core.Carved;
 using SCSKiller.Core.Planning;
 using SCSKiller.Core.Unreal;
@@ -35,6 +36,8 @@ public sealed class RedEngineReader : IEngineReader
 
     /// <summary>The whole material cache's layout, then the shaders of its first techniques whose keys it has, until one
     /// is a pipeline <see cref="Graphics"/> takes of a stage set the embedded rule lists.</summary>
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game)
     {
         var path = Path.Combine(game.InstallDir, Materials);
@@ -210,6 +213,6 @@ public sealed class RedEngineReader : IEngineReader
     static byte[] Stamp(Game game, string path)
     {
         var fi = new FileInfo(path);
-        return Encoding.UTF8.GetBytes($"{Path.GetRelativePath(game.InstallDir, path)}|{fi.Length}|{fi.LastWriteTimeUtc.Ticks}\n");
+        return Encoding.UTF8.GetBytes(ContentStamps.Of(Path.GetRelativePath(game.InstallDir, path), fi.FullName));
     }
 }

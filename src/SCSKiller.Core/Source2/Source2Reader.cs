@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using SCSKiller.Core.Games;
 using SCSKiller.Core.Carved;
 using SCSKiller.Core.Unreal;
 using ValvePak;
@@ -27,6 +28,8 @@ public sealed class Source2Reader : IEngineReader
     const int MaxBlock = 256 << 20;
 
     static string Bin(Game game) => Path.Combine(game.InstallDir, "game", "bin", "win64");
+
+    public int ReaderVersion(EngineInfo engine) => 2;
 
     public EngineInfo? Detect(Game game)
     {
@@ -54,7 +57,7 @@ public sealed class Source2Reader : IEngineReader
         {
             var f = new FileInfo(vpk);
             var rel = Path.GetRelativePath(game.InstallDir, vpk);
-            stamp.Append($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n");
+            stamp.Append(ContentStamps.Of(rel, f.FullName));
             using var pak = Open(vpk);
             foreach (var e in Programs(pak))
             {

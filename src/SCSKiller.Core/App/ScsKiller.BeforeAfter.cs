@@ -67,7 +67,7 @@ public sealed partial class ScsKiller
         {
             var (survivors, gap) = ClearBeforeRun(gameId);
             var rec = Store.LoadGame(gameId);
-            rec.BeforeAfter = new BeforeAfterRecord { Stage = BeforeArmed, Minutes = minutes, ArmedAt = Clock(), DriverId = DriverId, Build = BuildNow(g), Overlay = overlay,
+            rec.BeforeAfter = new BeforeAfterRecord { Stage = BeforeArmed, Minutes = minutes, ArmedAt = Clock(), DriverId = DriverId, Build = BuildNow(g), Overlay = overlay && CountdownDraws(Find(gameId)),
                 Survivors = survivors, ClearGap = gap };
             _played.TryRemove(gameId, out _);
             Changed(g, rec);
@@ -506,6 +506,10 @@ public sealed partial class ScsKiller
     }
 
     static bool Dx11Only(GameState s) => s.Engine?.GraphicsApi is { } api && api.StartsWith("D3D11") && !api.Contains("D3D12");
+
+    /// <summary>The recorder can draw the in-game countdown: not in a DirectX 12 game beside Ubisoft Connect's loader,
+    /// where it hooks no dxgi slot and System32's swap chain doesn't name its queue.</summary>
+    public static bool CountdownDraws(GameState s) => Dx11Only(s) || !File.Exists(Path.Combine(Path.GetDirectoryName(s.Game.ExePath)!, "upc_r2_loader64.dll"));
 
     static string F(string format, params object[] args) => string.Format(System.Globalization.CultureInfo.InvariantCulture, format, args);
 

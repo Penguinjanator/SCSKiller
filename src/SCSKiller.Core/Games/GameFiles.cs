@@ -230,13 +230,15 @@ public static class GameFiles
     static IEnumerable<string> Packaged(string dir) => Path.GetFileName(dir).Equals("WindowsNoEditor", StringComparison.OrdinalIgnoreCase)
         ? Directory.EnumerateDirectories(dir, "*", Flat).Prepend(dir) : [dir];
 
-    /// <summary>An i386 PE; false when it isn't one or can't be read.</summary>
+    /// <summary>An i386 PE that runs as a 32-bit process (not an AnyCPU .NET exe); false when it isn't one or can't be read.</summary>
     internal static bool Is32Bit(string exe)
     {
         try
         {
             using var pe = PeFile.Open(exe);
-            return pe.PEHeaders.CoffHeader.Machine == System.Reflection.PortableExecutable.Machine.I386;
+            var h = pe.PEHeaders;
+            return h.CoffHeader.Machine == System.Reflection.PortableExecutable.Machine.I386
+                && !(h.CorHeader?.Flags is { } f && f.HasFlag(System.Reflection.PortableExecutable.CorFlags.ILOnly) && !f.HasFlag(System.Reflection.PortableExecutable.CorFlags.Requires32Bit));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException) { return false; }
     }
@@ -371,19 +373,21 @@ public static class GameFiles
     internal static string SystemDir { get; set; } = Environment.SystemDirectory;   // replaceable for tests
 
     /// <summary>SHA-256 of each AMD AGS build the recorder's AGS wrapper (proxy/ags_exports.txt) has every export of: the game
-    /// links AGS by name, so a build with other exports can't be stood in for. Cyberpunk 2077's AGS 5.4.</summary>
-    internal static HashSet<string> WrappableAgs { get; set; } = new(["C1F0BD493B470FA369D681C370BBD46E019A7196DBE03D91272EA0BE214B3384"], StringComparer.OrdinalIgnoreCase);
+    /// links AGS by name, so a build with other exports can't be stood in for. Cyberpunk 2077's AGS 5.4, before and since
+    /// its 2.5 patch.</summary>
+    internal static HashSet<string> WrappableAgs { get; set; } = new(["C1F0BD493B470FA369D681C370BBD46E019A7196DBE03D91272EA0BE214B3384",
+        "B95F711BB2BDD27B1A1571D02DCF030D14C8813162616929BBFBED645EB85690"], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The exe has AGS make its DirectX 12 device (agsDriverExtensionsDX12_CreateDevice, which can reach System32's
     /// d3d12.dll without a d3d12.dll beside the exe seeing it), with an AGS the wrapper fits: the one beside the exe, or the
-    /// game's own once the wrapper stands in for it (amd_ags_real.dll).</summary>
+    /// game's own once the wrapper stands in for it (the name it links).</summary>
     internal static bool AgsMakesTheDevice(string exe)
     {
         var dir = Path.GetDirectoryName(exe)!;
         var ags = Path.Combine(dir, "amd_ags_x64.dll");
         try
         {
-            if (App.ScsKiller.IsOurProxy(ags)) ags = Path.Combine(dir, "amd_ags_real.dll");
+            if (App.ScsKiller.IsOurProxy(ags)) ags = Path.Combine(dir, App.ScsKiller.AgsLinked(ags));
             if (!File.Exists(ags) || !WrappableAgs.Contains(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(ags))))) return false;
             using var pe = PeFile.Open(exe);
             return PeFile.ImportedFunctions(pe, "amd_ags_x64.dll").Contains("agsDriverExtensionsDX12_CreateDevice");
@@ -561,6 +565,8 @@ public static class GameFiles
         if (game.Id.StartsWith("battlenet:", StringComparison.Ordinal) || game.Id.StartsWith("hoyoplay:", StringComparison.Ordinal)) return AntiCheat.Other;
         if (game.Id.StartsWith("riot:", StringComparison.Ordinal) || RiotGames(game.InstallDir) || RiotGames(game.ExePath)) return AntiCheat.Other;
         if (AntiCheatIds.Contains(game.Id, StringComparer.OrdinalIgnoreCase)) return AntiCheat.Other;
+        // the same install listed under another id (added by hand, also through a junction): the Steam app whose folder it is counts too
+        if (!game.Id.StartsWith("steam:", StringComparison.Ordinal) && SteamAntiCheatApp(game, steamRoot)) return AntiCheat.Other;
         var install =Path.TrimEndingDirectorySeparator(Path.GetFullPath(game.InstallDir));
         var exeDir = Path.GetDirectoryName(Path.GetFullPath(game.ExePath))!;
         bool Inside(string d) => d.Equals(install, StringComparison.OrdinalIgnoreCase) || d.StartsWith(install + '\\', StringComparison.OrdinalIgnoreCase);
@@ -659,9 +665,45 @@ public static class GameFiles
 
     /// <summary>Games whose anti-cheat leaves no file in the install. NetEase's: Once Human, Marvel Rivals, FragPunk, Sword of
     /// Justice, NARAKA: BLADEPOINT. Elytra's, whose service installs under Program Files: THE FINALS. Playground's own (online
-    /// checks, hardware bans): Forza Horizon 6 on Steam and the Xbox app. Ironmace's IronShield, no marker for it yet: Dark and Darker.</summary>
+    /// checks, hardware bans): Forza Horizon 6 on Steam and the Xbox app. Ironmace's IronShield, no marker for it yet: Dark and Darker.
+    /// Activision's Ricochet: Call of Duty: Modern Warfare (2019) on Steam, whose install has no randgrid.sys, and Call of Duty
+    /// HQ and Warzone, should their driver leave the game folder.</summary>
     internal static readonly string[] AntiCheatIds = ["steam:2139460", "steam:2767030", "steam:2943650", "steam:2782500", "steam:1203220",
-        "steam:2483190", "steam:2073850", "steam:2016590", "xbox:Microsoft.ForteBaseGame_8wekyb3d8bbwe"];
+        "steam:2483190", "steam:2073850", "steam:2016590", "xbox:Microsoft.ForteBaseGame_8wekyb3d8bbwe", "steam:2000950", "steam:1938090", "steam:1962663"];
+
+    /// <summary>The game's folder or exe, as given or as it is on disk, lies in the install folder, as named or as it is on disk,
+    /// of a Steam app on <see cref="AntiCheatIds"/>: in a library Steam lists or the one the game's path is in. Such an app's
+    /// manifest that can't be read counts for its library's whole steamapps\common, each folder in it as on disk too.</summary>
+    static bool SteamAntiCheatApp(Game g, string? steamRoot)
+    {
+        const StringComparison names = StringComparison.OrdinalIgnoreCase;
+        var paths = new[] { g.InstallDir, g.ExePath }.SelectMany(p => new[] { Path.GetFullPath(p), FinalPath(p) }).OfType<string>().ToList();
+        var libraries = paths.Select(p => p.IndexOf(@"\steamapps\common\", names) is var at and >= 0 ? p[..at] : null).OfType<string>().ToList();
+        try { libraries.AddRange(SteamSource.Libraries(steamRoot ?? SteamSource.Root())); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException) { }
+        bool Holds(string? root) => root != null && paths.Any(p => p.Equals(root, names) || p.StartsWith(root + Path.DirectorySeparatorChar, names));
+        static string[] Folders(string dir)
+        {
+            try { return Directory.GetDirectories(dir); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return []; }
+        }
+        foreach (var lib in libraries.Select(Path.TrimEndingDirectorySeparator).Distinct(StringComparer.OrdinalIgnoreCase))
+            foreach (var id in AntiCheatIds.Where(i => i.StartsWith("steam:", StringComparison.Ordinal)))
+            {
+                var common = Path.Combine(lib, "steamapps", "common");
+                string? dir;
+                try { dir = SteamSource.Values(File.ReadAllText(Path.Combine(lib, "steamapps", $"appmanifest_{id["steam:".Length..]}.acf")), "installdir").FirstOrDefault(); }
+                catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { continue; }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    if (Holds(common) || Holds(FinalPath(common)) || Folders(common).Any(f => Holds(FinalPath(f)))) return true;
+                    continue;
+                }
+                var root = string.IsNullOrEmpty(dir) ? common : Path.Combine(common, dir);
+                if (Holds(root) || Holds(FinalPath(root))) return true;
+            }
+        return false;
+    }
 
     /// <summary>A TruckersMP folder (any leftover counts) or an installed program named like it.</summary>
     internal static bool TruckersMp(IEnumerable<string> folders, IEnumerable<string> programs) =>

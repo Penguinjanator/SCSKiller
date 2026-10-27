@@ -596,7 +596,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         ForEachPackage(files, limit, progress, ct, f =>
         {
             var global = IsGlobalCache(f);
-            var owns = global ? true : OwnsShaderMaps(provider, f);
+            var owns = global ? true : OwnsShaderMaps(provider, f, budget);
             if (owns == false) return;
             if (owns == null) Interlocked.Increment(ref unparsed); // a header that doesn't parse: carve it whole
             using var held = budget.Take(PackageSize(provider, f));
@@ -667,12 +667,14 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
     }
 
     /// <summary>Whether a package exports an object of a <see cref="ShaderMapOwners"/> class, from its header (the first
-    /// 64 KB, below the large-object heap, else all of it); null if the header doesn't parse.</summary>
-    static bool? OwnsShaderMaps(IVfsFileProvider provider, GameFile f)
+    /// 64 KB, below the large-object heap, then 16 times more until all of it); null if the header doesn't parse. Reads
+    /// past 64 KB take <paramref name="budget"/>: a package without a .uexp (before 4.16) holds its exports too.</summary>
+    static bool? OwnsShaderMaps(IVfsFileProvider provider, GameFile f, ByteBudget budget)
     {
-        for (var size = Math.Min(f.Size, 64 << 10); ; size = f.Size)
+        for (var size = Math.Min(f.Size, 64 << 10); ; size = Math.Min(f.Size, size << 4))
             try
             {
+                using var held = size > 64 << 10 ? budget.Take(size) : default;
                 var ar = size == f.Size ? f.CreateReader() : f.CreateReader(new FByteBulkDataHeader(default, 0, (uint)size, 0, default));
                 IEnumerable<string> classes;
                 if (f is FIoStoreEntry io)
@@ -688,7 +690,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
                 }
                 return classes.Any(c => ShaderMapOwners.Any(o => c.EndsWith(o, StringComparison.Ordinal)));
             }
-            catch (Exception) when (size < f.Size) { } // a header larger than the head read: read it all
+            catch (Exception) when (size < f.Size) { } // a header larger than the head read: read more
             catch (Exception) { return null; }
     }
 
@@ -776,6 +778,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         {
             public void Dispose()
             {
+                if (budget is null) return;   // default: nothing taken
                 lock (budget)
                 {
                     budget.used -= bytes;
@@ -1050,7 +1053,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         Parallel.ForEach(provider.Files.Values.Where(f => f.IsUePackage || IsGlobalCache(f)).ToList(), ReaderLoops.Options(ct), f =>
         {
             var global = IsGlobalCache(f);
-            if (!global && OwnsShaderMaps(provider, f) == false) return;
+            if (!global && OwnsShaderMaps(provider, f, budget) == false) return;
             using var held = budget.Take(PackageSize(provider, f));
             byte[][] parts;
             try { parts = PackageParts(provider, f, out _); }

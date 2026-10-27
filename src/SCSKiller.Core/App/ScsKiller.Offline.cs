@@ -155,7 +155,10 @@ public sealed partial class ScsKiller
 
     bool RiskOfferedButLaunch(Game g, EngineInfo? engine, bool anyAntiCheat) =>
         Settings.RecordAntiCheatGames && anyAntiCheat && !Unconfirmed(g) && !RecorderCrashes(g)
-        && engine is { } e && (e.GraphicsApi.Contains("D3D12") || Records11Api(e, Vendor.Caps)) && GameVerdicts.Current.Unsupported(g, engine) == null;
+        && engine is { } e && RecordsApi(e) && GameVerdicts.Current.Unsupported(g, engine) == null;
+
+    /// <summary>A recorder can record the game's API on this GPU: DirectX 12, or DirectX 11 where its recording records (<see cref="Records11Api"/>).</summary>
+    bool RecordsApi(EngineInfo e) => e.GraphicsApi.Contains("D3D12") || Records11Api(e, Vendor.Caps);
 
     /// <summary>The recorder a risk or offline session places: d3d11.dll for a DirectX 11 game whose D3D11 recording records
     /// (<see cref="Records11Api"/>, whatever the engine's support), and on such a GPU for an Unreal 4 game that may run on either
@@ -242,7 +245,7 @@ public sealed partial class ScsKiller
                 if (found != shown) return $"{AntiCheatName(found, vac)} was found, not {AntiCheatName(shown, vac)}: confirm again";
                 if (!manual && (launch = LaunchCommand(g)) == null) return "its store has no launch SCSKiller can start";
                 // a mod is left as it is: only one holding a name the session places refuses
-                if (RecorderOwnFiles.Concat(placed).FirstOrDefault(f => Path.Exists(Path.Combine(dir, f))) is { } there) return $"{there} is already in its folder";
+                if ((RecorderOwnFiles.Concat(placed).FirstOrDefault(f => Path.Exists(Path.Combine(dir, f))) ?? PreloadIn(dir)) is { } there) return $"{there} is already in its folder";
                 if (ReShade.Detect(g) is { ProxyLibrary: true }) return "ReShade chains a proxy library ([PROXY])";
                 return null;
             }
@@ -456,7 +459,7 @@ public sealed partial class ScsKiller
                 if (GameFiles.DetectAntiCheat(g) != AntiCheat.EasyAntiCheat || GameFiles.DetectAntiCheat(g, ignore: AntiCheat.EasyAntiCheat) != AntiCheat.None)
                     return "its install has another anti-cheat, or couldn't be read whole";
                 // never alongside a mod: none of the names the session places may be there
-                if (RecorderOwnFiles.Concat(placed).FirstOrDefault(f => Path.Exists(Path.Combine(dir, f))) is { } there) return $"{there} is already in its folder";
+                if ((RecorderOwnFiles.Concat(placed).FirstOrDefault(f => Path.Exists(Path.Combine(dir, f))) ?? PreloadIn(dir)) is { } there) return $"{there} is already in its folder";
                 if (!addAppId && File.ReadAllText(appIdFile).Trim() != entry.AppId) return $"its folder has a {SteamAppIdFile} with another app id";
                 if (ReShade.Detect(g) is { } mod) return $"ReShade ({Path.GetFileName(mod.Dll)}) is in its folder";
                 if (!ProcessNames().Contains("steam")) return SteamFirst;   // else the game restarts through Steam, with EasyAntiCheat
@@ -527,9 +530,14 @@ public sealed partial class ScsKiller
     /// <summary>Writes a file in a game's folder under a temp name beside it, then renames it into place: a write cut off (a
     /// full disk, the app closed) leaves no half file under the real name, and one it <paramref name="replace"/>s stays whole
     /// until the rename.</summary>
-    static void Place(string path, Action<string> write, bool replace = false)
+    /// <param name="unique">the temp name is one nobody can know before it exists (<see cref="UniqueTemp"/>): write must fail
+    /// when it is there (File.Copy without overwrite), so a link planted beside it is never written through</param>
+    static void Place(string path, Action<string> write, bool replace = false, bool unique = false)
     {
-        var temp = path + TempSuffix;
+        // E2E: an antivirus refusing the recorder's copy (800700E1, 800700E2)
+        if (Environment.GetEnvironmentVariable("SCSKILLER_TEST_PLACE_FAIL") is { Length: > 0 } hr && path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            throw new IOException(hr, Convert.ToInt32(hr, 16));
+        var temp = unique ? UniqueTemp(path) : path + TempSuffix;
         try
         {
             write(temp);
@@ -687,6 +695,9 @@ public sealed partial class ScsKiller
         }
         foreach (var n in new[] { Dll12, Dll11 })   // ours by its export, whatever the manifest says
             try { if (IsOurProxy(Path.Combine(dir, n))) File.Delete(Path.Combine(dir, n)); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { left.Add(n); }
+        foreach (var n in PreloadNames)   // never a session's: a recorder's, left from before the anti-cheat was found
+            try { if (IsOurPreload(Path.Combine(dir, n))) File.Delete(Path.Combine(dir, n)); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { left.Add(n); }
         // a name is gone only when the folder, listed whole, lacks it (File.Exists is false on an access error too); one that
         // can't be listed keeps every name for the retry

@@ -194,7 +194,15 @@ public interface IAppCache
 public sealed record CachePart(string Name, IReadOnlyList<string> Files, long Bytes);
 
 /// <summary>A scskiller.db written by the proxy in record mode (format: proxy/proxy.cpp header).</summary>
-public sealed record Recording(string DbPath);
+public sealed record Recording(string DbPath)
+{
+    /// <summary>The ray tracing state objects only the community recording has (<see cref="Planning.Planner.CommunityLeftOut"/>);
+    /// null: none, or a GPU whose driver caches whole state objects only.</summary>
+    public IReadOnlySet<string>? CommunityStateObjects { get; init; }
+    /// <summary>This PC's recorded texture filtering settings (sampler sets, hex), last recorded first
+    /// (<see cref="Planning.SamplerVariants.Ordered"/>), and how many of them a plan compiles; null: every one the recording has.</summary>
+    public (IReadOnlyList<string> Sets, int Keep)? Filtering { get; init; }
+}
 
 public enum Readiness { Ready, NeedsRecording, Unsupported }
 public sealed record PlanCheck(Readiness Readiness, string Reason);
@@ -279,6 +287,8 @@ public interface IWarmRun
     /// <summary>Graceful: in-flight compiles finish and the process exits normally so the driver writes its cache.
     /// Resume later with <see cref="WarmOptions.StartAt"/> = the stopped run's Done.</summary>
     void Stop();
+    /// <summary>The last process's done event: it now exits while the driver writes its cache. Null: not known for this run.</summary>
+    Task? LastDone => null;
 }
 
 public interface IWarmer
@@ -315,6 +325,7 @@ public sealed record GameState(
     bool RecorderForeign = false,     // another SCSKiller copy placed the recorder in its folder: off here until the user turns it on
     string? RecorderSkip = null,      // ScsKiller.Skip*; null = compatible
     string? RecorderNote = null,      // the last reconcile's pending or failed change; null = none
+    string? RecorderFailure = null,   // the last install or update's failure while the recorder is wanted (GameRecord.RecorderFailure); null = none
     string? RecorderRefused = null,   // why the game's last launch wasn't recorded (ScsKiller.Refused, ScsKiller.NeverSaw); null = it recorded, or no launch since
     string? RecorderMod = null,       // what a foreign d3d12.dll in the game folder (or the one chained to it) calls itself; null = none
     bool RecordAlongsideMod = false,  // the user chose to record alongside it (IScsKiller.SetRecordAlongsideMod)
@@ -334,7 +345,9 @@ public sealed record GameState(
     bool ShaderModLayer = false,       // ...compiles through a copy of the layer (ScsKiller.LayerFor)
     bool ShaderModAsD3D12 = false,     // ...with ReShade installed as d3d12.dll: the recorder records under it only when chained
     bool RootUnconfirmed = false,      // a game the user added whose folder they haven't confirmed: never recorded (ScsKiller.SkipManual)
-    bool StreamlineFirst = false,      // on NVIDIA, Streamline loads the first d3d12.dll (GameFiles.StreamlineFirst): never recorded (ScsKiller.SkipStreamline)
+    bool StreamlineFirst = false,      // on NVIDIA, Streamline loads the first d3d12.dll (GameFiles.StreamlineFirst) and no preloader can go in (ScsKiller.PreloadName): never recorded (ScsKiller.SkipStreamline)
+    string? Preload = null,            // NVIDIA, Streamline first: the name the recorder's preloader goes in under beside it (ScsKiller.PreloadName); null = none
+    string? PreloadHeld = null,        // NVIDIA, Streamline first: the names it could go in under, when other files hold them all (ScsKiller.PreloadHeldSkip)
     bool AgsHost = false,              // AMD, and AGS makes the device (GameFiles.AgsMakesTheDevice): the recorder goes in as amd_ags_x64.dll (ScsKiller.AgsName)
     bool Vac = false,                  // Valve Anti-Cheat (Games.Vac): never recorded, compiled from its files like any game
     bool Records11 = false,            // the recorder goes in as d3d11.dll (ScsKiller.Records11)
@@ -531,7 +544,8 @@ public sealed record Settings(int Threads, WarmPriority Priority, DriverUpdateMo
     bool CompatReportSent = false,   // a compatibility report was sent from this install: Rate this compile's popup drops its disclosure (DetailPage.ReportDialog)
     bool HddMode = false);   // a game never checked is read only when its page opens or it compiles (ScsKiller.CheckGame), never by a scan
 
-public enum QueueStage { Waiting, Indexing, Planning, Materializing, Warming, Paused, Done, Failed, Stopped }
+/// <summary>Merging: a finished warm's dbs go into the game's D3DSCache folder (NVIDIA from 621), its progress in the bytes its checks and inserts read.</summary>
+public enum QueueStage { Waiting, Indexing, Planning, Materializing, Warming, Merging, Paused, Done, Failed, Stopped, Saving, Finishing }
 public sealed record QueueItem(string GameId, QueueStage Stage, WarmProgress? Progress, string? Error,
     string? Note = null,   // why it waits or is paused ("paused while <game> is running"); Done/Stopped: ScsKiller.WarmCounts (failed, skipped)
     bool PlanCheck = false);   // a background plan rebuild the app queued itself (ScsKiller.CheckPlans), not a compile: lists leave it out

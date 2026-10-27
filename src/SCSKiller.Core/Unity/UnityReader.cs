@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using SCSKiller.Core.Games;
 using SCSKiller.Core.Carved;
 using SCSKiller.Core.Unreal;
 using static SCSKiller.Core.Unity.UnityFiles;
@@ -45,6 +46,8 @@ public sealed class UnityReader : IEngineReader
         }
         return null;
     }
+
+    public int ReaderVersion(EngineInfo engine) => 2;
 
     public EngineInfo? Detect(Game game)
     {
@@ -167,7 +170,7 @@ public sealed class UnityReader : IEngineReader
         foreach (var path in locs.Values.Select(l => l.Path).Distinct().Order(StringComparer.OrdinalIgnoreCase))
         {
             var f = new FileInfo(path);
-            content.AppendData(Encoding.UTF8.GetBytes($"{Path.GetRelativePath(data, path)}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(Path.GetRelativePath(data, path), f.FullName)));
         }
         log?.Report($"{files} serialized files ({bundles.Count} bundles, {bundles.Sum(b => b.BlocksDecompressed)} blocks decompressed): {shaderObjs} Shader objects"
             + $"{(noBlob > 0 ? $" ({noBlob} without d3d11 code)" : "")}{(unreadable > 0 ? $" ({unreadable} unreadable)" : "")}, {computeObjs} ComputeShaders -> {shaders.Count} shaders ("
